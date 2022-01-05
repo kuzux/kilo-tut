@@ -11,6 +11,18 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+enum editorKey {
+	ARROW_UP    = 1000,
+	ARROW_LEFT,
+	ARROW_DOWN,
+	ARROW_RIGHT,
+	PAGE_UP,
+	PAGE_DOWN,
+	HOME_KEY,
+	END_KEY,
+	DEL_KEY
+};
+
 struct editorConfig {
 	struct termios orig_termios;
 
@@ -83,11 +95,55 @@ void enableRawMode() {
 	if(tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0) die("tcsetattr");
 }
 
-
-char editorReadKey() {
+int editorReadKey() {
 	char c = 0;
 	int rc = read(STDIN_FILENO, &c, 1);
 	if(rc < 0 && errno != EAGAIN) die("read");
+
+	if(c == '\x1b') {
+		// parsing escape sequence
+		char seq[3];
+		if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+		if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
+
+		if (seq[0] == '[') {
+			if(isdigit(seq[1])) {
+				// we need to read another character
+				// since some escape codes are like \x1b[5~
+				if(read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
+				if(seq[2] != '~') return '\x1b';
+
+				switch(seq[1]) {
+					case '1': return HOME_KEY;
+					case '3': return DEL_KEY;
+					case '4': return END_KEY;
+					case '5': return PAGE_UP;
+					case '6': return PAGE_DOWN;
+					case '7': return HOME_KEY;
+					case '8': return END_KEY;
+				}
+			}
+
+			switch (seq[1]) {
+			case 'A': return ARROW_UP;
+			case 'B': return ARROW_DOWN;
+			case 'C': return ARROW_RIGHT;
+			case 'D': return ARROW_LEFT;
+
+			case 'H': return HOME_KEY;
+			case 'F': return END_KEY;
+			}
+		}
+
+		if(seq[0] == 'O') {
+			switch (seq[1]) {
+			case 'H': return HOME_KEY;
+			case 'F': return END_KEY;
+			}
+		}
+
+		return '\x1b';
+	}
 
 	return c;
 }
@@ -175,9 +231,51 @@ void editorRefreshScreen() {
 	abFree(&ab);
 }
 
+void editorMoveCursor(int c) {
+	switch(c) {
+	case ARROW_UP:
+		if(E.cury) E.cury--;
+		break;
+	case ARROW_DOWN:
+		if(E.cury != E.screenrows - 1) E.cury++;
+		break;
+	case ARROW_LEFT:
+		if(E.curx) E.curx--;
+		break;
+	case ARROW_RIGHT:
+		if(E.curx != E.screencols - 1) E.curx++;
+		break;
+	}
+}
+
 void editorProcesssKeypress() {
-	char c = editorReadKey();
-	if(c==CTRL_KEY('q')) die(NULL);
+	int c = editorReadKey();
+	switch(c) {
+	case CTRL_KEY('q'): 
+		die(NULL);
+		break;
+
+	case HOME_KEY:
+		E.curx = 0;
+		break;
+	case END_KEY:
+		E.curx = E.screencols - 1;
+		break;
+
+	case PAGE_UP:
+	case PAGE_DOWN:
+		{
+			int times = E.screenrows;
+			while(times--)
+				editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+		}
+	case ARROW_UP:
+	case ARROW_DOWN:
+	case ARROW_LEFT:
+	case ARROW_RIGHT:
+		editorMoveCursor(c);
+		break;
+	}
 }
 
 int main() {
