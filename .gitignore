@@ -1,3 +1,6 @@
 kilo
 *.o
 a.out
+
+.DS_Store
+*.dSYM/
