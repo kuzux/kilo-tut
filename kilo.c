@@ -1,3 +1,4 @@
+// A super long line at the beginning just to test horizontal scrolling - lorem ipsum dolor sit amet consequitur yeah that's all I can remember
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
@@ -44,6 +45,7 @@ struct editorConfig {
 
     // offset of the first displayed row
     int rowoff;
+    int coloff;
 } E;
 
 // append buffer structure
@@ -229,7 +231,7 @@ void editorOpen(const char* filename) {
 void initEditor() {
     E.curx = E.cury = 0;
     E.numrows = 0;
-    E.rowoff = 0;
+    E.rowoff = E.coloff = 0;
     E.rows = NULL;
 
     // TODO: Update window size dynamically
@@ -239,6 +241,9 @@ void initEditor() {
 void editorScroll() {
     if (E.cury < E.rowoff) E.rowoff = E.cury;
     if (E.cury >= E.rowoff + E.screenrows) E.rowoff = E.cury - E.screenrows + 1;
+
+    if (E.curx < E.coloff) E.coloff = E.curx;
+    if (E.curx >= E.coloff + E.screencols) E.coloff = E.curx - E.screencols + 1;
 }
 
 // renders the display onto an append buffer
@@ -263,9 +268,10 @@ void editorDrawRows(struct abuf* ab) {
                 abAppend(ab, "~", 1);
             }
         } else {
-            int len = E.rows[rowNum].size;
+            int len = E.rows[rowNum].size - E.coloff;
+            if(len < 0) len = 0;
             if(len > E.screencols) len = E.screencols;
-            abAppend(ab, E.rows[rowNum].chars, len);
+            abAppend(ab, &E.rows[rowNum].chars[E.coloff], len);
         }
 
         abAppend(ab, "\x1b[K", 3); // clear current row
@@ -285,7 +291,7 @@ void editorRefreshScreen() {
     editorDrawRows(&ab);
 
     char cursorBuf[32];
-    int cursorBuflen = snprintf(cursorBuf, sizeof(cursorBuf), "\x1b[%d;%dH", E.cury-E.rowoff+1, E.curx+1);
+    int cursorBuflen = snprintf(cursorBuf, sizeof(cursorBuf), "\x1b[%d;%dH", E.cury-E.rowoff+1, E.curx-E.coloff+1);
     abAppend(&ab, cursorBuf, cursorBuflen);
 
     abAppend(&ab, "\x1b[?25h", 6); // show cursor
@@ -295,6 +301,9 @@ void editorRefreshScreen() {
 }
 
 void editorMoveCursor(int c) {
+    struct erow* row = (E.cury >= E.numrows) ? NULL : &E.rows[E.cury];
+    int rowlen = 0;
+
     switch(c) {
     case ARROW_UP:
         if(E.cury) E.cury--;
@@ -303,12 +312,27 @@ void editorMoveCursor(int c) {
         if(E.cury < E.numrows) E.cury++;
         break;
     case ARROW_LEFT:
-        if(E.curx) E.curx--;
+        if(E.curx) {
+            E.curx--;
+        } else if(E.cury) {
+            E.cury--;
+            rowlen = (E.cury >= E.numrows) ? 0 : E.rows[E.cury].size;
+            E.curx = rowlen;
+        }
         break;
     case ARROW_RIGHT:
-        if(E.curx != E.screencols - 1) E.curx++;
+        if(row && E.curx < row->size) {
+            E.curx++;
+        } else if(row && E.curx == row->size) {
+            E.cury++;
+            E.curx = 0;
+        }
         break;
     }
+
+    row = (E.cury >= E.numrows) ? NULL : &E.rows[E.cury];
+    rowlen = row ? row->size : 0;
+    if(E.curx >= rowlen) E.curx = rowlen;
 }
 
 void editorProcesssKeypress() {
