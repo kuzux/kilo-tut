@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #define KILO_VERSION "0.0.1"
+#define KILO_TABSTOP 8
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -27,6 +28,9 @@ enum editorKey {
 struct erow {
     int size;
     char* chars;
+
+    int rsize;
+    char* render;
 };
 
 struct editorConfig {
@@ -36,6 +40,7 @@ struct editorConfig {
     int screencols;
 
     int curx, cury; // cursor position
+    int rx; // cursor x position in render space
 
     // editor buffer
     // TODO: Convert to ptr/len/capacity triplet as well
@@ -197,14 +202,50 @@ int getWindowSize(int* rows, int* cols) {
     return 0;
 }
 
+int editorRowCxToRx(struct erow* row, int cx) {
+    int rx = 0;
+    for(int j=0; j<cx; j++) {
+        if(row->chars[j] == '\t')
+            rx += (KILO_TABSTOP - 1) - (rx % KILO_TABSTOP);
+        rx++;
+    }
+
+    return rx;
+}
+
+void editorUpdateRow(struct erow* row) {
+    int tabs=0;
+    for(int j=0; j<row->size; j++) if(row->chars[j]=='\t') tabs++;
+
+    if(row->render) free(row->render);
+    row->render = malloc(row->size + tabs*(KILO_TABSTOP-1) + 1);
+
+    int idx = 0;
+    for(int j=0; j<row->size; j++) {
+        if(row->chars[j] == '\t') {
+            row->render[idx++] = ' ';
+            while(idx%KILO_TABSTOP) row->render[idx++] = ' ';
+        } else {
+            row->render[idx++] = row->chars[j];
+        }
+    }
+    row->render[idx] = '\0';
+    row->rsize = idx;
+}
+
 void editorAppendRow(const char* row, size_t len) {
     E.rows = realloc(E.rows, sizeof(struct erow) * (E.numrows + 1));
-
     int at = E.numrows;
+
     E.rows[at].size  = len;
     E.rows[at].chars = malloc(len + 1);
+    E.rows[at].rsize = 0;
+    E.rows[at].render = NULL;
+
     memcpy(E.rows[at].chars, row, len);
     E.rows[at].chars[len] = '\0';
+    editorUpdateRow(&E.rows[at]);
+
     E.numrows++;
 }
 
@@ -239,11 +280,14 @@ void initEditor() {
 }
 
 void editorScroll() {
+    E.rx = E.curx;
+    if(E.cury < E.numrows) E.rx = editorRowCxToRx(&E.rows[E.cury], E.curx);
+
     if (E.cury < E.rowoff) E.rowoff = E.cury;
     if (E.cury >= E.rowoff + E.screenrows) E.rowoff = E.cury - E.screenrows + 1;
 
-    if (E.curx < E.coloff) E.coloff = E.curx;
-    if (E.curx >= E.coloff + E.screencols) E.coloff = E.curx - E.screencols + 1;
+    if (E.rx < E.coloff) E.coloff = E.rx;
+    if (E.rx >= E.coloff + E.screencols) E.coloff = E.rx - E.screencols + 1;
 }
 
 // renders the display onto an append buffer
@@ -268,10 +312,10 @@ void editorDrawRows(struct abuf* ab) {
                 abAppend(ab, "~", 1);
             }
         } else {
-            int len = E.rows[rowNum].size - E.coloff;
+            int len = E.rows[rowNum].rsize - E.coloff;
             if(len < 0) len = 0;
             if(len > E.screencols) len = E.screencols;
-            abAppend(ab, &E.rows[rowNum].chars[E.coloff], len);
+            abAppend(ab, &E.rows[rowNum].render[E.coloff], len);
         }
 
         abAppend(ab, "\x1b[K", 3); // clear current row
@@ -291,7 +335,7 @@ void editorRefreshScreen() {
     editorDrawRows(&ab);
 
     char cursorBuf[32];
-    int cursorBuflen = snprintf(cursorBuf, sizeof(cursorBuf), "\x1b[%d;%dH", E.cury-E.rowoff+1, E.curx-E.coloff+1);
+    int cursorBuflen = snprintf(cursorBuf, sizeof(cursorBuf), "\x1b[%d;%dH", E.cury-E.rowoff+1, E.rx-E.coloff+1);
     abAppend(&ab, cursorBuf, cursorBuflen);
 
     abAppend(&ab, "\x1b[?25h", 6); // show cursor
@@ -346,16 +390,21 @@ void editorProcesssKeypress() {
         E.curx = 0;
         break;
     case END_KEY:
-        E.curx = E.screencols - 1;
+        if(E.cury < E.numrows) E.curx = E.rows[E.cury].size;
         break;
 
     case PAGE_UP:
+        // the "regular" behavior of these is the same as putting our cursor at the beginning / end of the line and pushing up/down n times
+        E.cury = E.rowoff;
+        for(int t=0; t<E.screenrows; t++) editorMoveCursor(ARROW_UP);
+        break;
     case PAGE_DOWN:
-        {
-            int times = E.screenrows;
-            while(times--)
-                editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
-        }
+        E.cury = E.rowoff + E.screenrows - 1;
+        if(E.cury > E.numrows) E.cury = E.numrows;
+        for(int t=0; t<E.screenrows; t++) editorMoveCursor(ARROW_DOWN);
+        break;
+
+
     case ARROW_UP:
     case ARROW_DOWN:
     case ARROW_LEFT:
